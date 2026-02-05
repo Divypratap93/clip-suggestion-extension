@@ -1,7 +1,6 @@
 fastapi
 uvicorn[standard]
-deepgram-sdk
-yt-dlp
+httpx
 openai
 pydantic
 python-dotenv
