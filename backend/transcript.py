@@ -76,57 +76,45 @@ def fetch_transcript(
         languages.append(language_hint)
     languages.extend(PREFERRED_LANGUAGES)
     
-    transcript_data = None
-    detected_language = "en"
+    # Create API instance (new in v1.2.4)
+    api = YouTubeTranscriptApi()
     
     try:
-        # Try to get transcript with preferred languages first
-        try:
-            transcript_data = YouTubeTranscriptApi.get_transcript(
-                video_id, 
-                languages=languages
-            )
-            detected_language = language_hint or "en"
-        except Exception:
-            # Fall back to any available transcript
-            transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
-            detected_language = "auto"
+        # Try to fetch transcript with preferred languages
+        transcript = api.fetch(video_id, languages=languages)
     except Exception as e:
-        error_msg = str(e).lower()
-        if "disabled" in error_msg:
-            raise TranscriptNotAvailable("Transcripts are disabled for this video")
-        elif "no transcript" in error_msg or "could not retrieve" in error_msg:
-            raise TranscriptNotAvailable("No transcript found for this video")
-        elif "unavailable" in error_msg or "not available" in error_msg:
-            raise TranscriptNotAvailable("Video is unavailable or private")
-        else:
-            raise TranscriptNotAvailable(f"Cannot fetch transcript: {e}")
-    
-    if not transcript_data:
-        raise TranscriptNotAvailable("No transcript data received")
+        # Try to fetch any available transcript
+        try:
+            transcript_list = api.list(video_id)
+            # Get first available transcript
+            for t in transcript_list:
+                transcript = t.fetch()
+                break
+            else:
+                raise TranscriptNotAvailable("No transcripts available")
+        except Exception as inner_e:
+            error_msg = str(e).lower()
+            if "disabled" in error_msg:
+                raise TranscriptNotAvailable("Transcripts are disabled for this video")
+            elif "no transcript" in error_msg or "could not" in error_msg:
+                raise TranscriptNotAvailable("No transcript found for this video")
+            else:
+                raise TranscriptNotAvailable(f"Cannot fetch transcript: {e}")
     
     # Process segments
     segments: List[TranscriptSegment] = []
     
-    for item in transcript_data:
-        # Handle both dict format and object format
-        if isinstance(item, dict):
-            text = _clean_text(item.get('text', ''))
-            start = float(item.get('start', 0))
-            duration = float(item.get('duration', 0))
-        else:
-            # Object format (newer API versions)
-            text = _clean_text(getattr(item, 'text', ''))
-            start = float(getattr(item, 'start', 0))
-            duration = float(getattr(item, 'duration', 0))
+    # The new API returns a FetchedTranscript which is iterable
+    for snippet in transcript:
+        text = _clean_text(snippet.text)
         
         # Skip empty segments
         if not text:
             continue
         
         segments.append(TranscriptSegment(
-            t=round(start, 2),
-            d=round(duration, 2),
+            t=round(snippet.start, 2),
+            d=round(snippet.duration, 2),
             text=text
         ))
     
@@ -136,6 +124,9 @@ def fetch_transcript(
     
     if not segments:
         raise TranscriptNotAvailable("Transcript is empty after processing")
+    
+    # Get language from transcript if available
+    detected_language = getattr(transcript, 'language_code', 'en') or 'en'
     
     return TranscriptResult(
         segments=segments,
