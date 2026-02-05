@@ -209,6 +209,7 @@ async def generate_clips(request: Request, body: ClipIdeaRequest):
             ],
             meta=MetaInfo(
                 transcript_language=transcript_result.language,
+                transcript_source="deepgram",
                 model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
             )
         )

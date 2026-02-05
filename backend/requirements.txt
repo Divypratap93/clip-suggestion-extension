@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
-youtube-transcript-api
+deepgram-sdk
+yt-dlp
 openai
 pydantic
 python-dotenv
