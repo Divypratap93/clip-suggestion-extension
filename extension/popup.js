@@ -5,8 +5,8 @@
 
 // Configuration
 const CONFIG = {
-    // Change this to your deployed API URL in production
-    API_URL: 'http://localhost:8000/api/clip-ideas',
+    // Deployed API URL on Render
+    API_URL: 'https://clip-suggestion-extension.onrender.com/api/clip-ideas',
     CLIENT_HEADER: 'indiedoers-extension'
 };
 
