@@ -57,34 +57,82 @@ def _clean_text(text: str) -> str:
 
 def _extract_captions_from_html(html: str) -> Optional[str]:
     """Extract caption track URL from YouTube page HTML."""
-    # Look for captionTracks in the player response
-    patterns = [
-        r'"captionTracks":\s*(\[.*?\])',
-        r'"captions":\s*\{[^}]*"playerCaptionsTracklistRenderer":\s*\{[^}]*"captionTracks":\s*(\[.*?\])',
-    ]
     
-    for pattern in patterns:
-        match = re.search(pattern, html)
-        if match:
-            try:
-                tracks_json = match.group(1)
-                # Fix escaping
-                tracks_json = tracks_json.replace('\\"', '"').replace('\\/', '/')
-                tracks = json.loads(tracks_json)
-                
-                # Prefer English, then any language
-                for lang_code in ['en', 'en-US', 'en-GB', 'a.en']:
-                    for track in tracks:
-                        if track.get('languageCode', '').startswith(lang_code.split('.')[0]):
-                            return track.get('baseUrl')
+    # Method 1: Look for captionTracks in ytInitialPlayerResponse
+    # The data is in a script tag with var ytInitialPlayerResponse = {...};
+    player_response_match = re.search(
+        r'var\s+ytInitialPlayerResponse\s*=\s*(\{.+?\});',
+        html,
+        re.DOTALL
+    )
+    
+    if player_response_match:
+        try:
+            player_response = json.loads(player_response_match.group(1))
+            captions = player_response.get('captions', {})
+            renderer = captions.get('playerCaptionsTracklistRenderer', {})
+            tracks = renderer.get('captionTracks', [])
+            
+            if tracks:
+                # Prefer English
+                for track in tracks:
+                    lang = track.get('languageCode', '')
+                    if lang.startswith('en'):
+                        base_url = track.get('baseUrl', '')
+                        if base_url:
+                            logger.info(f"Found English caption track: {lang}")
+                            return base_url
                 
                 # Fall back to first available
-                if tracks:
-                    return tracks[0].get('baseUrl')
-            except (json.JSONDecodeError, KeyError, IndexError) as e:
-                logger.debug(f"Failed to parse caption tracks: {e}")
-                continue
+                base_url = tracks[0].get('baseUrl', '')
+                if base_url:
+                    logger.info(f"Using first available caption track: {tracks[0].get('languageCode', 'unknown')}")
+                    return base_url
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.debug(f"Failed to parse ytInitialPlayerResponse: {e}")
     
+    # Method 2: Look for captionTracks directly with regex (fallback)
+    # This handles cases where the JSON might be embedded differently
+    caption_tracks_match = re.search(
+        r'"captionTracks"\s*:\s*(\[[\s\S]*?\])\s*[,}]',
+        html
+    )
+    
+    if caption_tracks_match:
+        try:
+            tracks_json = caption_tracks_match.group(1)
+            # Handle escaped characters
+            tracks_json = tracks_json.encode().decode('unicode_escape')
+            tracks = json.loads(tracks_json)
+            
+            if tracks:
+                for track in tracks:
+                    lang = track.get('languageCode', '')
+                    if lang.startswith('en'):
+                        base_url = track.get('baseUrl', '')
+                        if base_url:
+                            return base_url
+                
+                base_url = tracks[0].get('baseUrl', '')
+                if base_url:
+                    return base_url
+        except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as e:
+            logger.debug(f"Failed to parse captionTracks regex match: {e}")
+    
+    # Method 3: Look for timedtext URL directly
+    timedtext_match = re.search(
+        r'(https?://www\.youtube\.com/api/timedtext[^"\']+)',
+        html
+    )
+    
+    if timedtext_match:
+        url = timedtext_match.group(1)
+        # Unescape URL
+        url = url.replace('\\u0026', '&').replace('\\/', '/')
+        logger.info("Found timedtext URL directly")
+        return url
+    
+    logger.warning("No caption extraction method succeeded")
     return None
 
 
@@ -173,8 +221,12 @@ def fetch_transcript(
             # Check if captions are disabled
             if '"playabilityStatus":{"status":"ERROR"' in html:
                 raise TranscriptNotAvailable("Video is unavailable or private")
-            if 'Sign in to confirm' in html or 'confirm you' in html.lower():
+            # Check for actual bot blocking page (not just general "sign in" text in normal UI)
+            if 'Sign in to confirm you' in html and 'captionTracks' not in html:
                 raise TranscriptNotAvailable("YouTube requires sign-in (bot detection)")
+            # Log what we found for debugging
+            has_captions_data = 'captionTracks' in html or 'timedtext' in html
+            logger.warning(f"No caption URL found. Has caption data in HTML: {has_captions_data}")
             raise TranscriptNotAvailable("No captions found for this video")
         
         logger.info(f"Found caption URL, fetching captions")
