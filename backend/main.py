@@ -4,6 +4,7 @@ Provides /api/clip-ideas endpoint for generating clip ideas.
 """
 
 import json
+import logging
 import os
 from typing import List, Optional
 
@@ -11,6 +12,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from openai_client import OpenAIError, generate_clip_ideas
 from rate_limiter import rate_limiter
@@ -215,6 +220,7 @@ async def generate_clips(request: Request, body: ClipIdeaRequest):
         )
     
     except TranscriptNotAvailable as e:
+        logger.error(f"Transcript error for video {body.videoId}: {str(e)}")
         raise HTTPException(
             status_code=400,
             detail={
@@ -224,6 +230,7 @@ async def generate_clips(request: Request, body: ClipIdeaRequest):
         )
     
     except OpenAIError as e:
+        logger.error(f"OpenAI error for video {body.videoId}: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail={
@@ -233,6 +240,7 @@ async def generate_clips(request: Request, body: ClipIdeaRequest):
         )
     
     except Exception as e:
+        logger.error(f"Unexpected error for video {body.videoId}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
