@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clip Suggestion</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" fill="url(#gradient)" />
+          <defs>
+            <linearGradient id="gradient" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#FF6B6B"/>
+              <stop offset="1" stop-color="#FF8E53"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <h1>Clip Suggestion</h1>
+      </div>
+      <p class="subtitle">AI-powered viral clip ideas</p>
+    </header>
+
+    <!-- Video Info -->
+    <div id="video-info" class="video-info hidden">
+      <span class="video-id-label">Video ID:</span>
+      <span id="video-id-display" class="video-id"></span>
+    </div>
+
+    <!-- Generate Button -->
+    <button id="generate-btn" class="generate-btn">
+      <span class="btn-text">✨ Generate Clip Ideas</span>
+      <div class="btn-loader hidden">
+        <div class="spinner"></div>
+        <span>Analyzing...</span>
+      </div>
+    </button>
+
+    <!-- Error Message -->
+    <div id="error-container" class="error-container hidden">
+      <div class="error-icon">⚠️</div>
+      <p id="error-message" class="error-message"></p>
+      <button id="retry-btn" class="retry-btn">Try Again</button>
+    </div>
+
+    <!-- Results -->
+    <div id="results-container" class="results-container hidden">
+      <h2 class="results-header">
+        <span>🎬 Clip Ideas</span>
+        <span id="results-count" class="results-count">5 ideas</span>
+      </h2>
+      <div id="ideas-list" class="ideas-list">
+        <!-- Ideas will be inserted here -->
+      </div>
+    </div>
+
+    <!-- Empty State -->
+    <div id="empty-state" class="empty-state">
+      <div class="empty-icon">🎥</div>
+      <p>Open a YouTube video and click Generate to get clip ideas</p>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>Powered by AI</span>
+      <span class="dot">•</span>
+      <span id="remaining-requests">--</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
