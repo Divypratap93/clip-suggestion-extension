@@ -1,17 +1,15 @@
 """
 YouTube transcript fetching using Deepgram.
 Downloads audio from YouTube and transcribes using Deepgram's API.
-Falls back to youtube-transcript-api if Deepgram fails.
 """
 
 import os
 import re
-import tempfile
 import subprocess
 from dataclasses import dataclass
 from typing import List, Optional
 
-from deepgram import DeepgramClient, PrerecordedOptions
+from deepgram import DeepgramClient
 
 
 class TranscriptNotAvailable(Exception):
@@ -89,15 +87,16 @@ def _transcribe_with_deepgram(audio_url: str) -> TranscriptResult:
     try:
         client = DeepgramClient(api_key)
         
-        options = PrerecordedOptions(
-            model="nova-2",
-            language="en",
-            smart_format=True,
-            punctuate=True,
-            paragraphs=True,
-            utterances=True,
-            diarize=False,
-        )
+        # Use the listen.prerecorded method with options dict
+        options = {
+            "model": "nova-2",
+            "language": "en",
+            "smart_format": True,
+            "punctuate": True,
+            "paragraphs": True,
+            "utterances": True,
+            "diarize": False,
+        }
         
         # Transcribe from URL
         response = client.listen.rest.v("1").transcribe_url(
@@ -109,7 +108,9 @@ def _transcribe_with_deepgram(audio_url: str) -> TranscriptResult:
         segments: List[TranscriptSegment] = []
         
         # Try to get utterances first (better segmentation)
-        utterances = response.results.utterances if hasattr(response.results, 'utterances') else None
+        utterances = None
+        if hasattr(response, 'results') and hasattr(response.results, 'utterances'):
+            utterances = response.results.utterances
         
         if utterances:
             for utterance in utterances:
@@ -128,41 +129,46 @@ def _transcribe_with_deepgram(audio_url: str) -> TranscriptResult:
                 ))
         else:
             # Fall back to words if no utterances
-            channels = response.results.channels
+            channels = response.results.channels if hasattr(response.results, 'channels') else None
             if channels and len(channels) > 0:
                 alternatives = channels[0].alternatives
                 if alternatives and len(alternatives) > 0:
-                    words = alternatives[0].words
+                    words = alternatives[0].words if hasattr(alternatives[0], 'words') else []
                     
                     # Group words into ~5 second chunks
                     current_segment_words = []
                     segment_start = 0.0
                     
                     for word in words:
-                        if not current_segment_words:
-                            segment_start = float(word.start)
+                        word_text = word.word if hasattr(word, 'word') else str(word)
+                        word_start = float(word.start) if hasattr(word, 'start') else 0
+                        word_end = float(word.end) if hasattr(word, 'end') else 0
                         
-                        current_segment_words.append(word.word)
+                        if not current_segment_words:
+                            segment_start = word_start
+                        
+                        current_segment_words.append(word_text)
                         
                         # Create segment every ~5 seconds or at sentence end
-                        if float(word.end) - segment_start >= 5.0 or word.word.endswith(('.', '?', '!')):
+                        if word_end - segment_start >= 5.0 or word_text.endswith(('.', '?', '!')):
                             text = _clean_text(' '.join(current_segment_words))
                             if text:
                                 segments.append(TranscriptSegment(
                                     t=round(segment_start, 2),
-                                    d=round(float(word.end) - segment_start, 2),
+                                    d=round(word_end - segment_start, 2),
                                     text=text
                                 ))
                             current_segment_words = []
                     
                     # Add remaining words
-                    if current_segment_words:
+                    if current_segment_words and words:
                         text = _clean_text(' '.join(current_segment_words))
                         if text:
                             last_word = words[-1]
+                            last_end = float(last_word.end) if hasattr(last_word, 'end') else 0
                             segments.append(TranscriptSegment(
                                 t=round(segment_start, 2),
-                                d=round(float(last_word.end) - segment_start, 2),
+                                d=round(last_end - segment_start, 2),
                                 text=text
                             ))
         
@@ -173,23 +179,18 @@ def _transcribe_with_deepgram(audio_url: str) -> TranscriptResult:
         if len(segments) > MAX_SEGMENTS:
             segments = segments[:MAX_SEGMENTS]
         
-        # Get detected language
-        detected_lang = "en"
-        if hasattr(response.results, 'channels') and response.results.channels:
-            alt = response.results.channels[0].alternatives
-            if alt and hasattr(alt[0], 'languages'):
-                detected_lang = alt[0].languages[0] if alt[0].languages else "en"
-        
         return TranscriptResult(
             segments=segments,
-            language=detected_lang
+            language="en"
         )
     
+    except TranscriptNotAvailable:
+        raise
     except Exception as e:
         error_msg = str(e).lower()
-        if "api key" in error_msg or "unauthorized" in error_msg:
+        if "api key" in error_msg or "unauthorized" in error_msg or "401" in error_msg:
             raise TranscriptNotAvailable("Invalid Deepgram API key")
-        elif "rate limit" in error_msg:
+        elif "rate limit" in error_msg or "429" in error_msg:
             raise TranscriptNotAvailable("Deepgram rate limit exceeded")
         else:
             raise TranscriptNotAvailable(f"Deepgram transcription failed: {e}")
