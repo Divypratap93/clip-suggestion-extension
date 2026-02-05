@@ -1,17 +1,14 @@
 """
-YouTube transcript fetching using direct HTTP requests.
-Fetches captions directly from YouTube's timedtext API.
-Falls back to scraping if needed.
+YouTube transcript fetching using YouTube's Innertube API.
+This is the internal API that YouTube's web client uses.
 """
 
-import os
-import re
 import json
 import logging
+import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import List, Optional
-from urllib.parse import urlencode
-import xml.etree.ElementTree as ET
 
 import httpx
 
@@ -41,6 +38,15 @@ class TranscriptResult:
 # Maximum segments to process
 MAX_SEGMENTS = 2000
 
+# YouTube Innertube API constants
+INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+INNERTUBE_CLIENT = {
+    "clientName": "WEB",
+    "clientVersion": "2.20240101.00.00",
+    "hl": "en",
+    "gl": "US",
+}
+
 
 def _clean_text(text: str) -> str:
     """Clean a transcript text segment."""
@@ -50,90 +56,10 @@ def _clean_text(text: str) -> str:
     # Decode HTML entities
     text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
     text = text.replace('&#39;', "'").replace('&quot;', '"')
+    text = text.replace('\n', ' ')
     # Collapse whitespace
     text = ' '.join(text.split())
     return text.strip()
-
-
-def _extract_captions_from_html(html: str) -> Optional[str]:
-    """Extract caption track URL from YouTube page HTML."""
-    
-    # Method 1: Look for captionTracks in ytInitialPlayerResponse
-    # The data is in a script tag with var ytInitialPlayerResponse = {...};
-    player_response_match = re.search(
-        r'var\s+ytInitialPlayerResponse\s*=\s*(\{.+?\});',
-        html,
-        re.DOTALL
-    )
-    
-    if player_response_match:
-        try:
-            player_response = json.loads(player_response_match.group(1))
-            captions = player_response.get('captions', {})
-            renderer = captions.get('playerCaptionsTracklistRenderer', {})
-            tracks = renderer.get('captionTracks', [])
-            
-            if tracks:
-                # Prefer English
-                for track in tracks:
-                    lang = track.get('languageCode', '')
-                    if lang.startswith('en'):
-                        base_url = track.get('baseUrl', '')
-                        if base_url:
-                            logger.info(f"Found English caption track: {lang}")
-                            return base_url
-                
-                # Fall back to first available
-                base_url = tracks[0].get('baseUrl', '')
-                if base_url:
-                    logger.info(f"Using first available caption track: {tracks[0].get('languageCode', 'unknown')}")
-                    return base_url
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.debug(f"Failed to parse ytInitialPlayerResponse: {e}")
-    
-    # Method 2: Look for captionTracks directly with regex (fallback)
-    # This handles cases where the JSON might be embedded differently
-    caption_tracks_match = re.search(
-        r'"captionTracks"\s*:\s*(\[[\s\S]*?\])\s*[,}]',
-        html
-    )
-    
-    if caption_tracks_match:
-        try:
-            tracks_json = caption_tracks_match.group(1)
-            # Handle escaped characters
-            tracks_json = tracks_json.encode().decode('unicode_escape')
-            tracks = json.loads(tracks_json)
-            
-            if tracks:
-                for track in tracks:
-                    lang = track.get('languageCode', '')
-                    if lang.startswith('en'):
-                        base_url = track.get('baseUrl', '')
-                        if base_url:
-                            return base_url
-                
-                base_url = tracks[0].get('baseUrl', '')
-                if base_url:
-                    return base_url
-        except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as e:
-            logger.debug(f"Failed to parse captionTracks regex match: {e}")
-    
-    # Method 3: Look for timedtext URL directly
-    timedtext_match = re.search(
-        r'(https?://www\.youtube\.com/api/timedtext[^"\']+)',
-        html
-    )
-    
-    if timedtext_match:
-        url = timedtext_match.group(1)
-        # Unescape URL
-        url = url.replace('\\u0026', '&').replace('\\/', '/')
-        logger.info("Found timedtext URL directly")
-        return url
-    
-    logger.warning("No caption extraction method succeeded")
-    return None
 
 
 def _parse_xml_captions(xml_content: str) -> List[TranscriptSegment]:
@@ -160,34 +86,80 @@ def _parse_xml_captions(xml_content: str) -> List[TranscriptSegment]:
     return segments
 
 
-async def _fetch_with_httpx(url: str, headers: dict = None) -> str:
-    """Fetch URL content using httpx."""
-    default_headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-    }
-    if headers:
-        default_headers.update(headers)
+def _get_captions_via_innertube(video_id: str) -> Optional[str]:
+    """
+    Get caption URL using YouTube's Innertube API.
+    This is the same API that YouTube's web player uses.
+    """
+    innertube_url = f"https://www.youtube.com/youtubei/v1/player?key={INNERTUBE_API_KEY}"
     
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        response = await client.get(url, headers=default_headers)
-        response.raise_for_status()
-        return response.text
-
-
-def _fetch_sync(url: str, headers: dict = None) -> str:
-    """Fetch URL content synchronously using httpx."""
-    default_headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
+    payload = {
+        "context": {
+            "client": INNERTUBE_CLIENT
+        },
+        "videoId": video_id
     }
-    if headers:
-        default_headers.update(headers)
     
-    with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-        response = client.get(url, headers=default_headers)
-        response.raise_for_status()
-        return response.text
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.youtube.com",
+        "Referer": f"https://www.youtube.com/watch?v={video_id}",
+    }
+    
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(innertube_url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+        
+        # Check playability status
+        playability = data.get('playabilityStatus', {})
+        if playability.get('status') == 'ERROR':
+            reason = playability.get('reason', 'Unknown error')
+            logger.warning(f"Video not playable: {reason}")
+            raise TranscriptNotAvailable(f"Video not available: {reason}")
+        
+        if playability.get('status') == 'LOGIN_REQUIRED':
+            logger.warning("Video requires login")
+            raise TranscriptNotAvailable("Video requires sign-in")
+        
+        # Extract caption tracks
+        captions = data.get('captions', {})
+        renderer = captions.get('playerCaptionsTracklistRenderer', {})
+        tracks = renderer.get('captionTracks', [])
+        
+        if not tracks:
+            logger.info("No caption tracks found in Innertube response")
+            return None
+        
+        # Prefer English captions
+        for track in tracks:
+            lang = track.get('languageCode', '')
+            if lang.startswith('en'):
+                base_url = track.get('baseUrl', '')
+                if base_url:
+                    logger.info(f"Found English caption track via Innertube: {lang}")
+                    return base_url
+        
+        # Fall back to first available
+        base_url = tracks[0].get('baseUrl', '')
+        if base_url:
+            logger.info(f"Using first caption track: {tracks[0].get('languageCode', 'unknown')}")
+            return base_url
+        
+        return None
+        
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Innertube API HTTP error: {e.response.status_code}")
+        if e.response.status_code == 429:
+            raise TranscriptNotAvailable("Rate limited by YouTube")
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Innertube response: {e}")
+        return None
 
 
 def fetch_transcript(
@@ -195,7 +167,7 @@ def fetch_transcript(
     language_hint: Optional[str] = None
 ) -> TranscriptResult:
     """
-    Fetch transcript for a YouTube video using direct HTTP requests.
+    Fetch transcript for a YouTube video using Innertube API.
     
     Args:
         video_id: YouTube video ID
@@ -208,33 +180,25 @@ def fetch_transcript(
         TranscriptNotAvailable: If transcript cannot be fetched
     """
     try:
-        # Step 1: Fetch YouTube video page
-        video_url = f'https://www.youtube.com/watch?v={video_id}'
-        logger.info(f"Fetching video page for {video_id}")
+        # Step 1: Get caption URL via Innertube API
+        logger.info(f"Fetching captions for video {video_id} via Innertube API")
         
-        html = _fetch_sync(video_url)
-        
-        # Step 2: Extract caption track URL
-        caption_url = _extract_captions_from_html(html)
+        caption_url = _get_captions_via_innertube(video_id)
         
         if not caption_url:
-            # Check if captions are disabled
-            if '"playabilityStatus":{"status":"ERROR"' in html:
-                raise TranscriptNotAvailable("Video is unavailable or private")
-            # Check for actual bot blocking page (not just general "sign in" text in normal UI)
-            if 'Sign in to confirm you' in html and 'captionTracks' not in html:
-                raise TranscriptNotAvailable("YouTube requires sign-in (bot detection)")
-            # Log what we found for debugging
-            has_captions_data = 'captionTracks' in html or 'timedtext' in html
-            logger.warning(f"No caption URL found. Has caption data in HTML: {has_captions_data}")
-            raise TranscriptNotAvailable("No captions found for this video")
+            raise TranscriptNotAvailable("No captions available for this video")
         
-        logger.info(f"Found caption URL, fetching captions")
+        # Step 2: Fetch the actual captions
+        logger.info("Fetching caption content")
         
-        # Step 3: Fetch captions
-        captions_xml = _fetch_sync(caption_url)
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(caption_url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            response.raise_for_status()
+            captions_xml = response.text
         
-        # Step 4: Parse captions
+        # Step 3: Parse captions
         segments = _parse_xml_captions(captions_xml)
         
         if not segments:
@@ -251,16 +215,16 @@ def fetch_transcript(
             language=language_hint or "en"
         )
     
+    except TranscriptNotAvailable:
+        raise
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error fetching transcript: {e}")
-        raise TranscriptNotAvailable(f"Failed to fetch video: HTTP {e.response.status_code}")
+        raise TranscriptNotAvailable(f"Failed to fetch captions: HTTP {e.response.status_code}")
     except httpx.RequestError as e:
         logger.error(f"Request error fetching transcript: {e}")
         raise TranscriptNotAvailable(f"Network error: {e}")
     except Exception as e:
         logger.error(f"Unexpected error fetching transcript: {e}")
-        if "Sign in" in str(e) or "bot" in str(e).lower():
-            raise TranscriptNotAvailable("YouTube requires sign-in (bot detection)")
         raise TranscriptNotAvailable(f"Failed to fetch transcript: {e}")
 
 
