@@ -5,14 +5,9 @@ Uses youtube-transcript-api to fetch captions.
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import (
-    NoTranscriptFound,
-    TranscriptsDisabled,
-    VideoUnavailable,
-)
 
 
 class TranscriptNotAvailable(Exception):
@@ -36,7 +31,7 @@ class TranscriptResult:
 
 
 # Language priority for transcript selection
-PREFERRED_LANGUAGES = ["en", "en-US", "en-GB"]
+PREFERRED_LANGUAGES = ["en", "en-US", "en-GB", "en-AU", "en-CA"]
 
 # Maximum segments to process (roughly 25 minutes of content)
 MAX_SEGMENTS = 2000
@@ -58,49 +53,6 @@ def _clean_text(text: str) -> str:
     return text.strip()
 
 
-def _select_transcript(video_id: str, language_hint: Optional[str] = None):
-    """
-    Select the best available transcript.
-    
-    Priority:
-    1. language_hint if provided
-    2. English variants (en, en-US, en-GB)
-    3. First available transcript
-    """
-    try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-    except (TranscriptsDisabled, VideoUnavailable, NoTranscriptFound) as e:
-        raise TranscriptNotAvailable(f"Cannot access transcript: {e}")
-    except Exception as e:
-        raise TranscriptNotAvailable(f"Error listing transcripts: {e}")
-    
-    # Build list of languages to try
-    languages_to_try = []
-    
-    if language_hint:
-        languages_to_try.append(language_hint)
-    
-    languages_to_try.extend(PREFERRED_LANGUAGES)
-    
-    # Try each language in order
-    for lang in languages_to_try:
-        try:
-            transcript = transcript_list.find_transcript([lang])
-            return transcript
-        except NoTranscriptFound:
-            continue
-    
-    # Fall back to first available transcript
-    try:
-        # Get any available transcript
-        for transcript in transcript_list:
-            return transcript
-    except Exception:
-        pass
-    
-    raise TranscriptNotAvailable("No transcript available for this video")
-
-
 def fetch_transcript(
     video_id: str,
     language_hint: Optional[str] = None
@@ -118,27 +70,59 @@ def fetch_transcript(
     Raises:
         TranscriptNotAvailable: If transcript cannot be fetched
     """
-    # Select best transcript
-    transcript = _select_transcript(video_id, language_hint)
+    # Build language priority list
+    languages = []
+    if language_hint:
+        languages.append(language_hint)
+    languages.extend(PREFERRED_LANGUAGES)
+    
+    transcript_data = None
+    detected_language = "en"
     
     try:
-        # Fetch the transcript data
-        transcript_data = transcript.fetch()
+        # Try to get transcript with preferred languages first
+        try:
+            transcript_data = YouTubeTranscriptApi.get_transcript(
+                video_id, 
+                languages=languages
+            )
+            detected_language = language_hint or "en"
+        except Exception:
+            # Fall back to any available transcript
+            transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
+            detected_language = "auto"
     except Exception as e:
-        raise TranscriptNotAvailable(f"Failed to fetch transcript: {e}")
+        error_msg = str(e).lower()
+        if "disabled" in error_msg:
+            raise TranscriptNotAvailable("Transcripts are disabled for this video")
+        elif "no transcript" in error_msg or "could not retrieve" in error_msg:
+            raise TranscriptNotAvailable("No transcript found for this video")
+        elif "unavailable" in error_msg or "not available" in error_msg:
+            raise TranscriptNotAvailable("Video is unavailable or private")
+        else:
+            raise TranscriptNotAvailable(f"Cannot fetch transcript: {e}")
+    
+    if not transcript_data:
+        raise TranscriptNotAvailable("No transcript data received")
     
     # Process segments
     segments: List[TranscriptSegment] = []
     
     for item in transcript_data:
-        text = _clean_text(item.get('text', ''))
+        # Handle both dict format and object format
+        if isinstance(item, dict):
+            text = _clean_text(item.get('text', ''))
+            start = float(item.get('start', 0))
+            duration = float(item.get('duration', 0))
+        else:
+            # Object format (newer API versions)
+            text = _clean_text(getattr(item, 'text', ''))
+            start = float(getattr(item, 'start', 0))
+            duration = float(getattr(item, 'duration', 0))
         
         # Skip empty segments
         if not text:
             continue
-        
-        start = float(item.get('start', 0))
-        duration = float(item.get('duration', 0))
         
         segments.append(TranscriptSegment(
             t=round(start, 2),
@@ -155,7 +139,7 @@ def fetch_transcript(
     
     return TranscriptResult(
         segments=segments,
-        language=transcript.language_code
+        language=detected_language
     )
 
 
